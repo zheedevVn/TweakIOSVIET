@@ -38,11 +38,19 @@ jobs:
           
           echo "Downloading iOS 16.5 SDK..."
           mkdir -p /opt/theos/sdks
-          curl -fSL -o iPhoneOS16.5.sdk.tar.xz "https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz" || \
-          curl -fSL -o iPhoneOS16.5.sdk.tar.xz "https://raw.githubusercontent.com/theos/sdks/master/iPhoneOS16.5.sdk.tar.xz"
+          for i in {1..5}; do
+            curl -fSL --retry 3 --retry-delay 2 -o iPhoneOS16.5.sdk.tar.xz "https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz" && break || sleep 3
+          done
           
-          tar -xf iPhoneOS16.5.sdk.tar.xz -C /opt/theos/sdks/
-          rm -f iPhoneOS16.5.sdk.tar.xz
+          if [ -f iPhoneOS16.5.sdk.tar.xz ]; then
+            tar -xf iPhoneOS16.5.sdk.tar.xz -C /opt/theos/sdks/
+            rm -f iPhoneOS16.5.sdk.tar.xz
+          else
+            echo "Direct download failed, cloning theos/sdks..."
+            git clone --depth 1 https://github.com/theos/sdks.git /tmp/theos-sdks
+            cp -r /tmp/theos-sdks/*.sdk /opt/theos/sdks/ || true
+            rm -rf /tmp/theos-sdks
+          fi
           
           ls -la /opt/theos/sdks/
           echo "THEOS=/opt/theos" >> $GITHUB_ENV
