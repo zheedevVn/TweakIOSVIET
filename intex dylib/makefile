@@ -14,6 +14,7 @@ iOSViet_USE_MODULES := 0
 
 # THÊM ĐƯỜNG DẪN FILE CỤ THỂ VÀO ĐÂY ĐỂ CHẮC CHẮN NÓ ĐƯỢC BUILD
 iOSViet_FILES := sources/StealthDylibInit.mm \
+                 sources/ZheeAPIClient.mm \
                  sources/InjectedMenuController.mm \
                  sources/_0xMO353DA.mm \
                  sources/_0xViSecureV28.m \
@@ -37,7 +38,7 @@ iOSViet_CFLAGS += -DMIZZE_GAME_PROCESS_NAME="\"FreeFire\""
 endif
 
 iOSViet_CCFLAGS += -std=c++17
-iOSViet_LDFLAGS += -Wl,-dead_strip_dylibs -Wl,-install_name,@rpath/libsubsystem.dylib sources/libAPIClient.a
+iOSViet_LDFLAGS += -Wl,-dead_strip_dylibs -Wl,-install_name,@rpath/libsubsystem.dylib
 iOSViet_FRAMEWORKS += CoreGraphics QuartzCore UIKit Security
 
 include $(THEOS_MAKE_PATH)/tweak.mk
