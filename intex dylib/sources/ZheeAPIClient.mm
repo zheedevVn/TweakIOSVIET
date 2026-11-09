@@ -20,6 +20,9 @@ static NSDictionary *sLastCheck = nil;
 static NSString *sDescription = nil;
 static NSString *sContactTitle = nil;
 
+extern "C" void zhee_diag(const char *step);
+static UIWindowScene *ZKActiveScene(void);
+
 // ---------- helpers ----------
 
 static NSString *ZKString(id v) {
@@ -69,6 +72,7 @@ static void ZKCheckKey(NSString *key, void (^done)(NSDictionary *json)) {
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
     req.HTTPMethod = @"GET";
     req.timeoutInterval = 15;
+    zhee_diag([NSString stringWithFormat:@"NET call key.len=%lu", (unsigned long)key.length].UTF8String);
     NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
         completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
             NSDictionary *json = nil;
@@ -76,6 +80,8 @@ static void ZKCheckKey(NSString *key, void (^done)(NSDictionary *json)) {
                 id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
                 if ([obj isKindOfClass:[NSDictionary class]]) json = obj;
             }
+            zhee_diag(json ? [NSString stringWithFormat:@"NET resp valid=%@", json[@"valid"]].UTF8String
+                           : @"NET resp nil (loi mang/parse)");
             dispatch_async(dispatch_get_main_queue(), ^{ done(json); });
         }];
     [task resume];
@@ -84,6 +90,57 @@ static void ZKCheckKey(NSString *key, void (^done)(NSDictionary *json)) {
 static BOOL ZKIsValid(NSDictionary *json) {
     return [json[@"valid"] respondsToSelector:@selector(boolValue)] && [json[@"valid"] boolValue];
 }
+
+// ---------- Chẩn đoán tại chỗ (v3) ----------
+// Băng đỏ trên cùng màn hình ghi từng mốc của luồng key. Mốc cuối cùng hiện lên
+// chính là chỗ luồng dừng. zhee_diag được StealthDylibInit gọi từ bên ngoài.
+
+static UIWindow *sDiagWindow = nil;
+static UILabel *sDiagLabel = nil;
+static NSMutableString *sDiagText = nil;
+static NSTimeInterval sDiagT0 = 0;
+
+static void ZKDiagShowWindow(void) {
+    if (sDiagWindow) return;
+    UIWindowScene *scene = ZKActiveScene();
+    UIWindow *w = scene ? [[UIWindow alloc] initWithWindowScene:scene]
+                        : [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    UIViewController *root = [UIViewController new];
+    root.view.backgroundColor = [UIColor clearColor];
+    CGFloat width = [UIScreen mainScreen].bounds.size.width;
+    UILabel *lab = [[UILabel alloc] initWithFrame:CGRectMake(8, 46, width - 16, 132)];
+    lab.backgroundColor = [[UIColor redColor] colorWithAlphaComponent:0.78];
+    lab.textColor = [UIColor whiteColor];
+    lab.font = [UIFont boldSystemFontOfSize:13];
+    lab.numberOfLines = 0;
+    lab.text = sDiagText ?: @"ZK-DIAG";
+    [root.view addSubview:lab];
+    w.rootViewController = root;
+    w.backgroundColor = [UIColor clearColor];
+    w.windowLevel = UIWindowLevelAlert + 100;
+    w.userInteractionEnabled = NO;
+    sDiagLabel = lab;
+    sDiagWindow = w;
+    w.hidden = NO;
+}
+
+extern "C" {
+
+ZKC_VIS void zhee_diag(const char *step) {
+    NSString *s = step ? @(step) : @"?";
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!sDiagT0) {
+            sDiagT0 = [NSProcessInfo processInfo].systemUptime;
+            sDiagText = [NSMutableString stringWithString:@"ZK-DIAG\n"];
+        }
+        [sDiagText appendFormat:@"+%.1fs %@\n",
+            [NSProcessInfo processInfo].systemUptime - sDiagT0, s];
+        ZKDiagShowWindow();
+        if (sDiagLabel) sDiagLabel.text = sDiagText;
+    });
+}
+
+} // extern "C" (diag)
 
 // ---------- Cửa sổ riêng cho popup key ----------
 // Không mượn cửa sổ của app chủ: tự dựng UIWindow đè lên trên cùng (kiểu cửa sổ
@@ -122,6 +179,8 @@ static void ZKWithKeyRoot(void (^block)(UIViewController *root)) {
                        dispatch_get_main_queue(), ^{ ZKWithKeyRoot(block); });
         return;
     }
+    zhee_diag([NSString stringWithFormat:@"WIN tao scene=%d wins=%lu",
+        scene != nil, (unsigned long)[UIApplication sharedApplication].windows.count].UTF8String);
     UIWindow *w = scene ? [[UIWindow alloc] initWithWindowScene:scene]
                         : [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
     UIViewController *root = [UIViewController new];
@@ -131,6 +190,7 @@ static void ZKWithKeyRoot(void (^block)(UIViewController *root)) {
     w.windowLevel = UIWindowLevelAlert + 50;
     sKeyWindow = w;
     [w makeKeyAndVisible];
+    zhee_diag(@"WIN-OK");
     block(root);
 }
 
@@ -170,7 +230,8 @@ static void ZKPresentKeyAlert(UIViewController *root, NSString *note) {
         }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"Đóng" style:UIAlertActionStyleCancel
         handler:^(__unused UIAlertAction *a) { ZKHideKeyWindow(); }]];
-    [root presentViewController:alert animated:YES completion:nil];
+    zhee_diag(@"ALERT present...");
+    [root presentViewController:alert animated:YES completion:^{ zhee_diag(@"ALERT-SHOWN"); }];
 }
 
 static void ZKShowKeyPrompt(NSString *note) {
@@ -189,6 +250,7 @@ static void ZKStartFlow(void) {
     if (sFlowStarted) return;
     sFlowStarted = YES;
     NSString *saved = ZKSavedKey();
+    zhee_diag([NSString stringWithFormat:@"FLOW saved.len=%lu", (unsigned long)saved.length].UTF8String);
     if (!saved.length) { ZKShowKeyPrompt(nil); return; }
     ZKCheckKey(saved, ^(NSDictionary *json) {
         if (json && ZKIsValid(json)) {
@@ -222,6 +284,7 @@ ZKC_VIS void apiclient_show_udid_guide(bool showGuide) { (void)showGuide; }
 ZKC_VIS void apiclient_set_window_mode(int mode) { (void)mode; }
 
 ZKC_VIS void apiclient_paid(apiclient_callback callback) {
+    zhee_diag(@"apiclient_paid()");
     if (callback) {
         sPaidCallback = [callback copy];
     }
