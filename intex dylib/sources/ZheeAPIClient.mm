@@ -69,8 +69,7 @@ static void ZKCheckKey(NSString *key, void (^done)(NSDictionary *json)) {
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
     req.HTTPMethod = @"GET";
     req.timeoutInterval = 15;
-    NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-    [[[NSURLSession sessionWithConfiguration:cfg] dataTaskWithRequest:req
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
         completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
             NSDictionary *json = nil;
             if (data && !err) {
@@ -78,31 +77,66 @@ static void ZKCheckKey(NSString *key, void (^done)(NSDictionary *json)) {
                 if ([obj isKindOfClass:[NSDictionary class]]) json = obj;
             }
             dispatch_async(dispatch_get_main_queue(), ^{ done(json); });
-        }] resume];
+        }];
+    [task resume];
 }
 
 static BOOL ZKIsValid(NSDictionary *json) {
     return [json[@"valid"] respondsToSelector:@selector(boolValue)] && [json[@"valid"] boolValue];
 }
 
-static UIViewController *ZKTopController(void) {
-    UIWindow *win = nil;
-    for (UIWindow *w in [UIApplication sharedApplication].windows) {
-        if (w.isKeyWindow) { win = w; break; }
+// ---------- Cửa sổ riêng cho popup key ----------
+// Không mượn cửa sổ của app chủ: tự dựng UIWindow đè lên trên cùng (kiểu cửa sổ
+// cảnh báo), bám theo scene đang active. Cách này hiện được cả trong game lẫn
+// app thường, kể cả khi app chủ chưa có key window hoặc đang bận trình diễn.
+
+static UIWindow *sKeyWindow = nil;
+static int sSceneRetries = 0;
+
+static UIWindowScene *ZKActiveScene(void) {
+    NSSet *scenes = [UIApplication sharedApplication].connectedScenes;
+    for (UIScene *s in scenes) {
+        if (s.activationState == UISceneActivationStateForegroundActive &&
+            [s isKindOfClass:[UIWindowScene class]]) {
+            return (UIWindowScene *)s;
+        }
     }
-    if (!win) win = [UIApplication sharedApplication].windows.firstObject;
-    UIViewController *top = win.rootViewController;
-    while (top.presentedViewController) top = top.presentedViewController;
-    return top;
+    for (UIScene *s in scenes) {
+        if ([s isKindOfClass:[UIWindowScene class]]) return (UIWindowScene *)s;
+    }
+    return nil;
 }
 
-static void ZKShowKeyPrompt(NSString *note) {
-    UIViewController *top = ZKTopController();
-    if (!top) { // cửa sổ chưa sẵn sàng — thử lại sau 1s
+static void ZKHideKeyWindow(void) {
+    if (!sKeyWindow) return;
+    sKeyWindow.hidden = YES;
+    sKeyWindow = nil;
+}
+
+static void ZKWithKeyRoot(void (^block)(UIViewController *root)) {
+    if (sKeyWindow) { block(sKeyWindow.rootViewController); return; }
+    UIWindowScene *scene = ZKActiveScene();
+    if (!scene && [UIApplication sharedApplication].windows.count == 0 && sSceneRetries < 60) {
+        sSceneRetries++;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{ ZKShowKeyPrompt(note); });
+                       dispatch_get_main_queue(), ^{ ZKWithKeyRoot(block); });
         return;
     }
+    UIWindow *w = scene ? [[UIWindow alloc] initWithWindowScene:scene]
+                        : [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    UIViewController *root = [UIViewController new];
+    root.view.backgroundColor = [UIColor clearColor];
+    w.rootViewController = root;
+    w.backgroundColor = [UIColor clearColor];
+    w.windowLevel = UIWindowLevelAlert + 50;
+    sKeyWindow = w;
+    [w makeKeyAndVisible];
+    block(root);
+}
+
+static void ZKShowKeyPrompt(NSString *note);
+
+static void ZKPresentKeyAlert(UIViewController *root, NSString *note) {
     NSString *msg = note.length ? note
         : (sDescription.length ? sDescription : @"Nhập key bản quyền để tiếp tục");
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Kích hoạt Key"
@@ -124,15 +158,31 @@ static void ZKShowKeyPrompt(NSString *note) {
                 if (ZKIsValid(json)) {
                     sLastCheck = json;
                     [[NSUserDefaults standardUserDefaults] setObject:key forKey:kZKKeyDefaults];
-                    ZKFirePaid();
+                    [root dismissViewControllerAnimated:YES completion:^{
+                        ZKHideKeyWindow();
+                        ZKFirePaid();
+                    }];
                 } else {
                     NSString *m = ZKString(json[@"message"]);
                     ZKShowKeyPrompt(m.length ? m : @"Key không hợp lệ");
                 }
             });
         }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Đóng" style:UIAlertActionStyleCancel handler:nil]];
-    [top presentViewController:alert animated:YES completion:nil];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Đóng" style:UIAlertActionStyleCancel
+        handler:^(__unused UIAlertAction *a) { ZKHideKeyWindow(); }]];
+    [root presentViewController:alert animated:YES completion:nil];
+}
+
+static void ZKShowKeyPrompt(NSString *note) {
+    ZKWithKeyRoot(^(UIViewController *root) {
+        if (root.presentedViewController) {
+            [root dismissViewControllerAnimated:NO completion:nil];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ ZKPresentKeyAlert(root, note); });
+        } else {
+            ZKPresentKeyAlert(root, note);
+        }
+    });
 }
 
 static void ZKStartFlow(void) {
