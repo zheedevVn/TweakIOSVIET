@@ -21,6 +21,7 @@ static NSString *sDescription = nil;
 static NSString *sContactTitle = nil;
 
 extern "C" void zhee_diag(const char *step);
+static inline void zhee_diag(NSString *s) { zhee_diag(s.UTF8String ?: ""); }
 static UIWindowScene *ZKActiveScene(void);
 
 // ---------- helpers ----------
@@ -80,7 +81,7 @@ static void ZKCheckKey(NSString *key, void (^done)(NSDictionary *json)) {
                 id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
                 if ([obj isKindOfClass:[NSDictionary class]]) json = obj;
             }
-            zhee_diag(json ? [NSString stringWithFormat:@"NET resp valid=%@", json[@"valid"]].UTF8String
+            zhee_diag(json ? [NSString stringWithFormat:@"NET resp valid=%@", json[@"valid"]]
                            : @"NET resp nil (loi mang/parse)");
             dispatch_async(dispatch_get_main_queue(), ^{ done(json); });
         }];
