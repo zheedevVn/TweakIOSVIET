@@ -20,21 +20,41 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-14
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Theos
-        uses: Randomblock1/theos-action@v1
-        with:
-          theos-sdks: 'https://github.com/theos/sdks'
-
-      - name: Install dependencies
+      - name: Setup Theos & iOS SDK
         run: |
+          echo "Installing prerequisites via Homebrew..."
           brew install ldid
-          # Install insert_dylib
+          
+          echo "Cloning Theos into /opt/theos..."
+          sudo git clone --recursive https://github.com/theos/theos.git /opt/theos
+          sudo chown -R $(whoami) /opt/theos
+          
+          echo "Downloading iOS 16.5 SDK..."
+          curl -LO https://github.com/theos/sdks/releases/download/v1.0/iPhoneOS16.5.sdk.tar.xz || \
+          curl -LO https://raw.githubusercontent.com/theos/sdks/master/iPhoneOS16.5.sdk.tar.xz || \
+          curl -s https://api.github.com/repos/theos/sdks/releases | grep "browser_download_url.*iPhoneOS16.5.sdk.tar.xz" | head -n 1 | cut -d : -f 2,3 | tr -d \" | xargs curl -LO
+          
+          if [ -f iPhoneOS16.5.sdk.tar.xz ]; then
+            tar -xf iPhoneOS16.5.sdk.tar.xz -C /opt/theos/sdks/
+            rm -f iPhoneOS16.5.sdk.tar.xz
+          else
+            echo "Falling back to git clone sdks..."
+            git clone --depth=1 https://github.com/theos/sdks.git /tmp/theos-sdks
+            cp -r /tmp/theos-sdks/*.sdk /opt/theos/sdks/ || true
+            rm -rf /tmp/theos-sdks
+          fi
+          
+          ls -la /opt/theos/sdks/
+          echo "THEOS=/opt/theos" >> $GITHUB_ENV
+
+      - name: Build insert_dylib tool
+        run: |
           git clone https://github.com/tyrael-hu/insert_dylib.git
           cd insert_dylib
           xcodebuild
@@ -53,16 +73,20 @@ jobs:
           echo "Building variant: $VARIANT"
           make clean
           if [ "$VARIANT" = "max" ]; then
-            make package GAME_VARIANT=max FINALPACKAGE=1 FOR_RELEASE=1
+            make package GAME_VARIANT=max FINALPACKAGE=1 FOR_RELEASE=1 THEOS=/opt/theos
           else
-            make package FINALPACKAGE=1 FOR_RELEASE=1
+            make package FINALPACKAGE=1 FOR_RELEASE=1 THEOS=/opt/theos
           fi
           
-          # Inspect output
           mkdir -p output_artifacts
           cp .theos/obj/arm64/*.dylib output_artifacts/ 2>/dev/null || true
           cp packages/*.deb output_artifacts/ 2>/dev/null || true
+          cp packages/*.dylib output_artifacts/ 2>/dev/null || true
+          
+          echo "Built files:"
+          ls -lh output_artifacts/
         env:
+          THEOS: /opt/theos
           CFLAGS: "-Wl,-U,___isPlatformVersionAtLeast"
           TARGET: iphone:clang:16.5:13.0
           ARCHS: arm64
@@ -71,7 +95,11 @@ jobs:
         id: package_tipa
         run: |
           IPA_URL="${{ github.event.inputs.ipa_url }}"
-          DYLIB_PATH=$(ls temp_build/.theos/obj/arm64/*.dylib | head -n 1)
+          DYLIB_PATH=$(find temp_build/.theos/obj/arm64/ -name "*.dylib" | head -n 1)
+          if [ -z "$DYLIB_PATH" ]; then
+            DYLIB_PATH=$(find temp_build/packages/ -name "*.dylib" | head -n 1)
+          fi
+          echo "Using Dylib path: $DYLIB_PATH"
           
           if [ -n "$IPA_URL" ]; then
             echo "Downloading IPA from $IPA_URL..."
