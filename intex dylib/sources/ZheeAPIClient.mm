@@ -70,7 +70,7 @@ static void ZKCheckKey(NSString *key, void (^done)(NSDictionary *json)) {
     req.HTTPMethod = @"GET";
     req.timeoutInterval = 15;
     NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-    [[NSURLSession sessionWithConfiguration:cfg] dataTaskWithRequest:req
+    [[[NSURLSession sessionWithConfiguration:cfg] dataTaskWithRequest:req
         completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
             NSDictionary *json = nil;
             if (data && !err) {
@@ -173,8 +173,7 @@ ZKC_VIS void apiclient_set_window_mode(int mode) { (void)mode; }
 
 ZKC_VIS void apiclient_paid(apiclient_callback callback) {
     if (callback) {
-        if (sPaidCallback) Block_release(sPaidCallback);
-        sPaidCallback = Block_copy(callback);
+        sPaidCallback = [callback copy];
     }
     dispatch_async(dispatch_get_main_queue(), ^{ ZKStartFlow(); });
 }
@@ -192,7 +191,7 @@ ZKC_VIS const char *apiclient_get_activated_at(void) {
 ZKC_VIS const char *apiclient_get_activated_at_local(void) { return apiclient_get_activated_at(); }
 ZKC_VIS const char *apiclient_get_device_model(void) {
     struct utsname u; uname(&u);
-    return ZKBuffer(@(u.machine ?: ""));
+    return ZKBuffer([NSString stringWithUTF8String:u.machine]);
 }
 ZKC_VIS const char *apiclient_get_login_ip(void) { return ZKBuffer(@""); }
 ZKC_VIS const char *apiclient_get_package_name(void) {
