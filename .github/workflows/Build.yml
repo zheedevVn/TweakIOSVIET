@@ -1,0 +1,122 @@
+name: Build TweakIOSVIET & Package TIPA
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      ipa_url:
+        description: 'Direct download URL for Free Fire IPA (Optional, to package into .tipa)'
+        required: false
+        default: ''
+      game_variant:
+        description: 'Game Variant: th (Normal) or max (Free Fire MAX)'
+        required: true
+        default: 'th'
+        type: choice
+        options:
+          - th
+          - max
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Theos
+        uses: Randomblock1/theos-action@v1
+        with:
+          theos-sdks: 'https://github.com/theos/sdks'
+
+      - name: Install dependencies
+        run: |
+          brew install ldid
+          # Install insert_dylib
+          git clone https://github.com/tyrael-hu/insert_dylib.git
+          cd insert_dylib
+          xcodebuild
+          sudo cp build/Release/insert_dylib /usr/local/bin/
+          cd ..
+          rm -rf insert_dylib
+
+      - name: Build Dylib
+        run: |
+          mkdir -p temp_build
+          cp -R "intex dylib/"* temp_build/
+          cd temp_build
+          find . -name "control" -exec perl -pi -e 's/\r//g' {} \; || true
+          
+          VARIANT="${{ github.event.inputs.game_variant || 'th' }}"
+          echo "Building variant: $VARIANT"
+          make clean
+          if [ "$VARIANT" = "max" ]; then
+            make package GAME_VARIANT=max FINALPACKAGE=1 FOR_RELEASE=1
+          else
+            make package FINALPACKAGE=1 FOR_RELEASE=1
+          fi
+          
+          # Inspect output
+          mkdir -p output_artifacts
+          cp .theos/obj/arm64/*.dylib output_artifacts/ 2>/dev/null || true
+          cp packages/*.deb output_artifacts/ 2>/dev/null || true
+        env:
+          CFLAGS: "-Wl,-U,___isPlatformVersionAtLeast"
+          TARGET: iphone:clang:16.5:13.0
+          ARCHS: arm64
+
+      - name: Package TIPA (if IPA URL provided)
+        id: package_tipa
+        run: |
+          IPA_URL="${{ github.event.inputs.ipa_url }}"
+          DYLIB_PATH=$(ls temp_build/.theos/obj/arm64/*.dylib | head -n 1)
+          
+          if [ -n "$IPA_URL" ]; then
+            echo "Downloading IPA from $IPA_URL..."
+            curl -L "$IPA_URL" -o base_game.ipa
+            
+            echo "Unpacking IPA..."
+            unzip -q base_game.ipa -d ipa_extracted
+            
+            APP_DIR=$(find ipa_extracted/Payload -maxdepth 1 -name "*.app" | head -n 1)
+            APP_NAME=$(basename "$APP_DIR")
+            EXEC_NAME=$(defaults read "$PWD/$APP_DIR/Info.plist" CFBundleExecutable)
+            
+            echo "Target App: $APP_NAME, Executable: $EXEC_NAME"
+            
+            # Copy dylib into app bundle
+            cp "$DYLIB_PATH" "$APP_DIR/iOSViet.dylib"
+            
+            # Inject dylib into binary
+            insert_dylib --weak --strip-codesig "@executable_path/iOSViet.dylib" "$APP_DIR/$EXEC_NAME" "$APP_DIR/$EXEC_NAME"
+            
+            # Fake sign with ldid for TrollStore / sideloading
+            ldid -S "$APP_DIR/$EXEC_NAME"
+            ldid -S "$APP_DIR/iOSViet.dylib"
+            
+            # Package into .tipa
+            cd ipa_extracted
+            zip -qr ../TweakIOSVIET.tipa Payload
+            cd ..
+            
+            cp TweakIOSVIET.tipa temp_build/output_artifacts/
+            echo "tipa_built=true" >> $GITHUB_OUTPUT
+          else
+            echo "No IPA URL provided. Generating TrollStore-ready TIPA archive with dylib payload..."
+            mkdir -p tipa_payload/Payload/TweakIOSVIET.app
+            cp "$DYLIB_PATH" tipa_payload/Payload/TweakIOSVIET.app/
+            cd tipa_payload
+            zip -qr ../TweakIOSVIET_Dylib.tipa Payload
+            cd ..
+            cp TweakIOSVIET_Dylib.tipa temp_build/output_artifacts/
+            echo "tipa_built=placeholder" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload Build Artifacts (Dylib, DEB & TIPA)
+        uses: actions/upload-artifact@v4
+        with:
+          name: TweakIOSVIET-Artifacts
+          path: temp_build/output_artifacts/*
+          if-no-files-found: warn
